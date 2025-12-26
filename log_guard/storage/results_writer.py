@@ -199,7 +199,6 @@ class ResultsWriter:
         """
         Start the results writer.
         """
-        # Connect to Kafka and database.
         self._connect_kafka()
         self._connect_database()
 

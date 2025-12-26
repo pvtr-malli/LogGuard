@@ -77,7 +77,8 @@ services:
       POSTGRES_DB: logguard
     volumes:
       - timescaledb-data:/var/lib/postgresql/data
-      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql # this runs automatically on first start
+      # NOTE the docker runs all the sql scripts in this folder to initialize the database.
     networks:
       - logguard-network
     healthcheck:

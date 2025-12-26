@@ -1,7 +1,11 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "log_guard"
+name = "log-guard"
 version = "0.1.0"
-description = "Add your description here"
+description = "Real-time log anomaly detection system using streaming pipelines"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,3 +21,7 @@ dependencies = [
     "pyarrow>=22.0.0",
     "scikit-learn>=1.8.0",
 ]
+
+[tool.setuptools.packages.find]
+include = ["log_guard*"]
+exclude = ["data*", "models*", "notebooks*", "docs*"]
