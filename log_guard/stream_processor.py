@@ -18,6 +18,7 @@ from pathlib import Path
 
 from log_guard.pipeline.feature_extractor import FeatureExtractor
 from log_guard.pipeline.predictor import AnomalyPredictor
+from log_guard.utils.logger import setup_logger
 
 
 class StreamProcessor:
@@ -64,6 +65,13 @@ class StreamProcessor:
         self.anomalies_detected = 0
         self.logs_processed = 0
 
+        # Setup logger.
+        self.logger = setup_logger(
+            name='stream_processor',
+            log_level='INFO',
+            log_file='logs/processor.log'
+        )
+
         # Setup signal handlers.
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -75,7 +83,7 @@ class StreamProcessor:
         param signum: Signal number.
         param frame: Current stack frame.
         """
-        print(f"\n\nReceived signal {signum}, shutting down gracefully...")
+        self.logger.warning(f"Received signal {signum}, shutting down gracefully...")
         self.stop()
         sys.exit(0)
 
@@ -83,7 +91,7 @@ class StreamProcessor:
         """
         Load trained models and artifacts.
         """
-        print("Loading trained models...")
+        self.logger.info("Loading trained models...")
 
         try:
             with open(self.model_dir / 'tfidf_vectorizer.pkl', 'rb') as f:
@@ -110,20 +118,20 @@ class StreamProcessor:
                 scaler_path=str(self.model_dir / 'scaler.pkl')
             )
 
-            print("✓ Models loaded successfully")
+            self.logger.info("Models loaded successfully")
 
         except FileNotFoundError as e:
-            print(f"✗ Model file not found: {e}")
-            print("\nPlease export models from notebooks first:")
-            print("  1. Run notebook 04_text_embeddings.ipynb (final cell)")
-            print("  2. Run notebook 05_anomaly_detection_models.ipynb (final cell)")
+            self.logger.error(f"Model file not found: {e}")
+            self.logger.error("Please export models from notebooks first:")
+            self.logger.error("  1. Run notebook 04_text_embeddings.ipynb (final cell)")
+            self.logger.error("  2. Run notebook 05_anomaly_detection_models.ipynb (final cell)")
             raise
 
     def connect(self):
         """
         Connect to Kafka.
         """
-        print(f"Connecting to Kafka at {self.kafka_brokers}...")
+        self.logger.info(f"Connecting to Kafka at {self.kafka_brokers}...")
 
         try:
             self.consumer = KafkaConsumer(
@@ -143,10 +151,10 @@ class StreamProcessor:
                 retries=3
             )
 
-            print("✓ Connected to Kafka successfully")
+            self.logger.info("Connected to Kafka successfully")
 
         except KafkaError as e:
-            print(f"✗ Failed to connect to Kafka: {e}")
+            self.logger.error(f"Failed to connect to Kafka: {e}")
             raise
 
     def _process_window(self):
@@ -164,6 +172,13 @@ class StreamProcessor:
                 window=f'{self.window_seconds}s'
             )
             results = self.predictor.predict_with_confidence(features_df)
+
+            # Calculate ground truth (if available in logs)
+            ground_truth_anomaly = 0
+            if 'is_anomaly' in logs_df.columns:
+                # If any log in the window is labeled as anomaly, the window is anomalous
+                ground_truth_anomaly = int(logs_df['is_anomaly'].max())
+
             for _, row in results.iterrows():
                 result_message = {
                     'timestamp': row['timestamp'].isoformat() if pd.notna(row['timestamp']) else None,
@@ -175,6 +190,7 @@ class StreamProcessor:
                     'log_count': len(logs_df),
                     'error_count': len(logs_df[logs_df['level'] == 'ERROR']),
                     'critical_count': len(logs_df[logs_df['level'].isin(['ERROR', 'FATAL'])]),
+                    'ground_truth': ground_truth_anomaly  # Ground truth for evaluation
                 }
 
                 self.producer.send(self.output_topic, value=result_message)
@@ -185,13 +201,14 @@ class StreamProcessor:
             self.windows_processed += 1
             self.logs_processed += len(logs_df)
 
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] "
-                  f"Window {self.windows_processed}: "
-                  f"Processed {len(logs_df)} logs, "
-                  f"Anomalies: {results['is_anomaly'].sum()}")
+            self.logger.info(
+                f"Window {self.windows_processed}: "
+                f"Processed {len(logs_df)} logs, "
+                f"Anomalies: {results['is_anomaly'].sum()}"
+            )
 
         except Exception as e:
-            print(f"✗ Error processing window: {e}")
+            self.logger.error(f"Error processing window: {e}", exc_info=True)
 
         finally:
             # Clear buffer for next window.
@@ -207,13 +224,14 @@ class StreamProcessor:
         self.running = True
         self.window_start_time = datetime.now(timezone.utc)
 
-        print(f"\n{'='*60}")
-        print(f"Starting stream processor")
-        print(f"{'='*60}")
-        print(f"Input topic: {self.input_topic}")
-        print(f"Output topic: {self.output_topic}")
-        print(f"Window size: {self.window_seconds} seconds")
-        print(f"\nPress Ctrl+C to stop\n")
+        self.logger.info("=" * 60)
+        self.logger.info("Starting stream processor")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Input topic: {self.input_topic}")
+        self.logger.info(f"Output topic: {self.output_topic}")
+        self.logger.info(f"Window size: {self.window_seconds} seconds")
+        self.logger.info("Press Ctrl+C to stop")
+        self.logger.info("=" * 60)
 
         try:
             while self.running:
@@ -234,7 +252,7 @@ class StreamProcessor:
                     self.window_start_time = current_time
 
         except KeyboardInterrupt:
-            print("\nKeyboard interrupt received")
+            self.logger.warning("Keyboard interrupt received")
         finally:
             self.stop()
 
@@ -245,24 +263,24 @@ class StreamProcessor:
         self.running = False
 
         if self.log_buffer:
-            print("\nProcessing remaining logs...")
+            self.logger.info("Processing remaining logs...")
             self._process_window()
 
         if self.producer:
-            print("Flushing producer...")
+            self.logger.info("Flushing producer...")
             self.producer.flush(timeout=10)
             self.producer.close()
 
         if self.consumer:
-            print("Closing consumer...")
+            self.logger.info("Closing consumer...")
             self.consumer.close()
 
-        print(f"\n{'='*60}")
-        print(f"Stream processor stopped")
-        print(f"{'='*60}")
-        print(f"Windows processed: {self.windows_processed:,}")
-        print(f"Logs processed: {self.logs_processed:,}")
-        print(f"Anomalies detected: {self.anomalies_detected:,}")
+        self.logger.info("=" * 60)
+        self.logger.info("Stream processor stopped")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Windows processed: {self.windows_processed:,}")
+        self.logger.info(f"Logs processed: {self.logs_processed:,}")
+        self.logger.info(f"Anomalies detected: {self.anomalies_detected:,}")
 
 
 def main():

@@ -9,6 +9,7 @@ import numpy as np
 import re
 from typing import Dict
 from sklearn.metrics import pairwise_distances
+from log_guard.utils.logger import setup_logger
 
 
 class FeatureExtractor:
@@ -29,6 +30,12 @@ class FeatureExtractor:
         self.svd = svd
         self.kmeans = kmeans
         self.message_rarity_lookup = message_rarity_lookup
+
+        # Setup logger.
+        self.logger = setup_logger(
+            name='feature_extractor',
+            log_level='DEBUG'
+        )
 
     @staticmethod
     def preprocess_log_message(message: str) -> str:
@@ -128,19 +135,23 @@ class FeatureExtractor:
         param df: DataFrame with columns [timestamp, level, message].
         param window: Time window for aggregation.
         """
+        self.logger.debug(f"Extracting features from {len(df)} logs with {window} window")
+
         # Ensure timestamp is datetime.
         df['timestamp'] = pd.to_datetime(df['timestamp'])
 
         # 1. Volume features.
         volume_features = self.extract_volume_features(df, window)
+        self.logger.debug(f"Extracted {len(volume_features.columns)} volume features")
 
         # 3. Text features.
         text_features = self.extract_text_features(df, window)
+        self.logger.debug(f"Extracted {len(text_features.columns)} text features")
 
-        # Merge features.
         all_features = volume_features.join(text_features, how='left')
-
         # Fill NaNs and infinities.
         all_features = all_features.fillna(0).replace([np.inf, -np.inf], 0)
+
+        self.logger.debug(f"Total features extracted: {len(all_features.columns)}")
 
         return all_features.reset_index()

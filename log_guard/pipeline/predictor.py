@@ -9,6 +9,7 @@ import numpy as np
 import pickle
 from typing import Tuple
 from pathlib import Path
+from log_guard.utils.logger import setup_logger
 
 
 class AnomalyPredictor:
@@ -26,12 +27,22 @@ class AnomalyPredictor:
         self.model_path = Path(model_path)
         self.scaler_path = Path(scaler_path)
 
+        # Setup logger.
+        self.logger = setup_logger(
+            name='predictor',
+            log_level='DEBUG'
+        )
+
         # Load model and scaler.
+        self.logger.debug(f"Loading DBSCAN model from {self.model_path}")
         with open(self.model_path, 'rb') as f:
             self.model = pickle.load(f)
 
+        self.logger.debug(f"Loading scaler from {self.scaler_path}")
         with open(self.scaler_path, 'rb') as f:
             self.scaler = pickle.load(f)
+
+        self.logger.debug("Predictor initialized successfully")
 
     def predict(self, features_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -46,16 +57,10 @@ class AnomalyPredictor:
         else:
             timestamps = None
 
-        # Scale features.
         X_scaled = self.scaler.transform(features_df)
-
-        # Predict using DBSCAN (noise points are anomalies).
         labels = self.model.fit_predict(X_scaled)
-
         # Convert to binary anomaly flag (1 = anomaly, 0 = normal).
         anomaly_flags = (labels == -1).astype(int)
-
-        # Create results DataFrame.
         results = pd.DataFrame({
             'is_anomaly': anomaly_flags
         })
@@ -71,6 +76,8 @@ class AnomalyPredictor:
 
         param features_df: DataFrame with extracted features.
         """
+        self.logger.debug(f"Predicting anomalies for {len(features_df)} feature vectors")
+
         # Remove timestamp column if present.
         if 'timestamp' in features_df.columns:
             timestamps = features_df['timestamp']
@@ -78,21 +85,21 @@ class AnomalyPredictor:
         else:
             timestamps = None
 
-        # Scale features.
         X_scaled = self.scaler.transform(features_df)
-
-        # Predict using DBSCAN.
         labels = self.model.fit_predict(X_scaled)
-
-        # Convert to binary anomaly flag.
         anomaly_flags = (labels == -1).astype(int)
+
+        num_anomalies = anomaly_flags.sum()
+        self.logger.debug(f"DBSCAN detected {num_anomalies} anomalies out of {len(features_df)} samples")
 
         # Calculate anomaly confidence scores.
         # For DBSCAN, use distance to nearest cluster centroid.
+        # # Noise point: distance to nearest cluster center.
         cluster_centers = self._compute_cluster_centers(X_scaled, labels)
+        self.logger.debug(f"Computed {len(cluster_centers)} cluster centers")
+
         anomaly_scores = self._compute_anomaly_scores(X_scaled, labels, cluster_centers)
 
-        # Create results DataFrame.
         results = pd.DataFrame({
             'is_anomaly': anomaly_flags,
             'anomaly_score': anomaly_scores,
@@ -113,8 +120,6 @@ class AnomalyPredictor:
         """
         cluster_centers = {}
         unique_labels = set(labels)
-
-        # Remove noise label (-1).
         unique_labels.discard(-1)
 
         for label in unique_labels:
