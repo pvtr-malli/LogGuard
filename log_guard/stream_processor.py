@@ -139,7 +139,7 @@ class StreamProcessor:
                 bootstrap_servers=self.kafka_brokers,
                 group_id=self.consumer_group,
                 value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                auto_offset_reset='latest',  # Start from latest messages.
+                auto_offset_reset='earliest',  # Start from beginning if no offset.
                 enable_auto_commit=True,
                 auto_commit_interval_ms=1000
             )
@@ -162,11 +162,15 @@ class StreamProcessor:
         Process accumulated logs in the current window.
         """
         if not self.log_buffer:
+            self.logger.info(
+                f"Window {self.windows_processed + 1}: "
+                f"No data to process (empty buffer)"
+            )
             return
 
         try:
             logs_df = pd.DataFrame(self.log_buffer)
-            logs_df['timestamp'] = pd.to_datetime(logs_df['timestamp'])
+            logs_df['timestamp'] = pd.to_datetime(logs_df['timestamp'], format='ISO8601')
             features_df = self.feature_extractor.extract_all_features(
                 logs_df,
                 window=f'{self.window_seconds}s'

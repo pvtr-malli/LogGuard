@@ -138,7 +138,7 @@ class FeatureExtractor:
         self.logger.debug(f"Extracting features from {len(df)} logs with {window} window")
 
         # Ensure timestamp is datetime.
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], format='ISO8601')
 
         # 1. Volume features.
         volume_features = self.extract_volume_features(df, window)

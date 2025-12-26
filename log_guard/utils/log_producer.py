@@ -24,7 +24,7 @@ class LogProducer:
         self,
         kafka_brokers: str = 'localhost:9092',
         topic: str = 'log-events',
-        logs_per_second: int = 100,
+        logs_per_second: float = 100,
         anomaly_probability: float = 0.005
     ):
         """
@@ -32,7 +32,7 @@ class LogProducer:
 
         param kafka_brokers: Kafka bootstrap servers.
         param topic: Kafka topic to send logs to.
-        param logs_per_second: Rate of log generation.
+        param logs_per_second: Rate of log generation (can be fractional, e.g., 0.5 for 1 log per 2 seconds).
         param anomaly_probability: Probability of generating anomaly logs.
         """
         self.kafka_brokers = kafka_brokers
@@ -42,45 +42,95 @@ class LogProducer:
         self.running = False
         self.producer: Optional[KafkaProducer] = None
 
-        # Log templates.
-        self.normal_templates = [
-            "Database query completed - rows: {rows}, duration: {duration}ms",
-            "Payment processed - transaction_id: txn_{txn_id}, amount: ${amount}",
-            "Inventory updated - item_id: item_{item_id}, quantity: {quantity}",
-            "Email notification sent to user{user_id}@example.com",
-            "Cache hit for key: cache_{cache_id}",
-            "Cache miss for key: cache_{cache_id}",
-            "Request processed successfully - user_id: {user_id}, duration: {duration}ms",
-            "Order created successfully - order_id: ord_{order_id}",
-            "Authentication successful for user {user_id}",
-            "User session created - session_id: sess_{session_id}",
-            "API request received - endpoint: /api/{endpoint}, method: {method}",
-            "Query plan: {plan}",
+        # Log templates (MUST match training data structure - each level has specific messages).
+        self.normal_templates = {
+            'INFO': [
+                'Request processed successfully - user_id: {user_id}, duration: {duration}ms',
+                'Authentication successful for user {user_id}',
+                'Payment processed - transaction_id: {txn_id}, amount: ${amount}',
+                'Order created successfully - order_id: {order_id}',
+                'Cache hit for key: {cache_key}',
+                'Database query completed - rows: {rows}, duration: {duration}ms',
+                'API request received - endpoint: {endpoint}, method: {method}',
+                'User session created - session_id: {session_id}',
+                'Email notification sent to {email}',
+                'Inventory updated - item_id: {item_id}, quantity: {quantity}',
+            ],
+            'DEBUG': [
+                'Entering function: {function_name}',
+                'Cache miss for key: cache_{cache_id}',
+                'Query plan: {plan}',
+                'Response payload size: {size} bytes',
+                'Connection pool stats: active={active}, idle={idle}',
+            ],
+            'WARN': [
+                'High memory usage detected: {memory}%',
+                'Slow query detected - duration: {slow_duration}ms',
+                'Rate limit approaching for user {user_id}',
+                'Connection retry attempt {attempt} of 3',
+                'Cache eviction due to size limit',
+                'Service latency above threshold: {duration}ms',
+            ],
+            # EXPECTED ERRORS (business logic, user errors - NOT anomalies when isolated).
+            'ERROR': [
+                'Authentication failed - invalid password for user {user_id}',
+                'Validation error - missing required field: {field_name}',
+                'Order failed - insufficient inventory for item {item_id}',
+                'Payment declined - insufficient funds for user {user_id}',
+                'Invalid request - malformed JSON in request body',
+                'Resource not found - user_id {user_id} does not exist',
+                'Session expired for user {user_id}',
+                'Rate limit exceeded for user {user_id} - retry after {retry_after}s',
+            ],
+            'FATAL': [
+                'Unhandled exception in request handler - {error}',
+            ]
+        }
+
+        # Anomaly templates (TRUE system anomalies - pattern-based detection).
+        self.anomaly_templates = {
+            'spike_error': [
+                'Database connection pool exhausted - max connections: {max_conn}',
+                'Service unavailable - {service} not responding after {attempts} attempts',
+                'Connection timeout to {host} - {error_msg}',
+                'Failed to acquire database lock - deadlock detected',
+            ],
+            'cascade': [
+                'Circuit breaker opened for {service} - failure threshold exceeded',
+                'Upstream service {service} unavailable - cascading failure',
+                'Database cluster unreachable - all nodes down',
+                'Message queue full - dropping messages',
+            ],
+            'resource': [
+                'Disk space critically low: {disk_space}% remaining',
+                'Memory usage critical: {memory}% used',
+                'CPU usage sustained above 95% for {duration} seconds',
+                'Thread pool exhausted - queue size: {queue_size}',
+            ],
+            'security': [
+                'Suspicious activity detected from IP: {ip_address}',
+                'Brute force attack detected - {attempts} failed login attempts',
+                'Potential SQL injection attempt in query',
+                'Unauthorized access attempt to admin endpoint',
+            ]
+        }
+
+        # Log levels (MUST match training data distribution).
+        # Training uses: ['INFO', 'DEBUG', 'WARN', 'ERROR', 'FATAL'] with weights [0.65, 0.20, 0.10, 0.045, 0.005]
+        # IMPORTANT: Normal logs can have ERROR/FATAL (business errors like "invalid password").
+        self.log_levels = ['INFO', 'DEBUG', 'WARN', 'ERROR', 'FATAL']
+        self.normal_level_weights = [0.65, 0.20, 0.10, 0.045, 0.005]
+
+        # Services (MUST match training data format exactly).
+        self.services = [
+            'auth-service',
+            'payment-service',
+            'order-service',
+            'inventory-service',
+            'user-service',
+            'notification-service',
+            'api-gateway'
         ]
-
-        self.anomaly_templates = [
-            "Connection timeout to database - retrying in 5s",
-            "Memory usage critical - 95% utilized",
-            "Disk space low - 2GB remaining",
-            "Slow query detected - duration: {slow_duration}ms",
-            "Rate limit exceeded for user {user_id}",
-            "Failed authentication attempt for user {user_id}",
-            "Payment failed - insufficient funds - txn_{txn_id}",
-            "Database connection pool exhausted",
-            "Thread pool exhausted - queue size: {queue_size}",
-            "Unhandled exception in request handler - {error}",
-            "Invalid request - malformed JSON in request body",
-            "Potential SQL injection attempt in query",
-            "Service unavailable - external API timeout",
-            "Circuit breaker opened for service: {service}",
-        ]
-
-        # Log levels.
-        self.normal_levels = ['INFO', 'DEBUG']
-        self.anomaly_levels = ['WARN', 'ERROR', 'FATAL']
-
-        # Components.
-        self.components = ['auth', 'payment', 'inventory', 'notification', 'database', 'cache', 'api']
 
         # Setup signal handlers for graceful shutdown.
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -100,41 +150,71 @@ class LogProducer:
     def _generate_log(self) -> dict:
         """
         Generate a single log entry.
+
+        IMPORTANT: Matches training data exactly:
+        1. Pick log level first (weighted distribution for normal logs)
+        2. Pick template from that level's templates
+        3. Normal logs can have ERROR/FATAL (business errors, not anomalies)
         """
         is_anomaly = random.random() < self.anomaly_probability
 
         if is_anomaly:
-            template = random.choice(self.anomaly_templates)
-            level = random.choice(self.anomaly_levels)
+            # Anomalies: Pick anomaly category, then template.
+            anomaly_category = random.choice(list(self.anomaly_templates.keys()))
+            template = random.choice(self.anomaly_templates[anomaly_category])
+            # Anomalies are typically ERROR/FATAL/WARN.
+            level = random.choice(['ERROR', 'FATAL', 'WARN'])
         else:
-            template = random.choice(self.normal_templates)
-            level = random.choice(self.normal_levels)
+            # Normal logs: Pick level first (weighted), then template from that level.
+            level = random.choices(self.log_levels, weights=self.normal_level_weights)[0]
+            template = random.choice(self.normal_templates[level])
 
-        # Generate parameters.
+        # Generate parameters (all possible template variables).
+        # IMPORTANT: Parameter names must match template placeholders exactly.
         message = template.format(
+            # Normal log parameters.
             rows=random.randint(1, 1000),
             duration=random.randint(10, 500),
-            slow_duration=random.randint(1000, 5000),
             txn_id=random.randint(100000, 999999),
-            amount=f"{random.randint(10, 1000)}.{random.randint(10, 99)}",
-            item_id=random.randint(1, 1000),
-            quantity=random.randint(1, 100),
-            user_id=random.randint(1000, 9999),
-            cache_id=random.randint(1, 100),
+            amount=round(random.uniform(10, 1000), 2),
             order_id=random.randint(100000, 999999),
+            cache_id=random.randint(1, 100),
+            cache_key=f'cache_{random.randint(1, 100)}',
+            endpoint=random.choice(['/api/users', '/api/orders', '/api/payments']),
+            method=random.choice(['GET', 'POST', 'PUT']),
             session_id=random.randint(100000, 999999),
-            endpoint=random.choice(['users', 'payments', 'orders', 'products']),
-            method=random.choice(['GET', 'POST', 'PUT', 'DELETE']),
+            email=f'user{random.randint(1, 1000)}@example.com',
+            item_id=random.randint(1, 500),
+            quantity=random.randint(1, 100),
+            function_name=random.choice(['processPayment', 'validateUser', 'updateInventory']),
+            query_plan='index_scan',
+            size=random.randint(100, 50000),
+            active=random.randint(5, 20),
+            idle=random.randint(10, 50),
+            user_id=random.randint(1000, 9999),
+            memory=random.randint(40, 75),
+            slow_duration=random.randint(1000, 5000),
+            attempt=random.randint(1, 3),
+            field_name=random.choice(['email', 'password', 'amount', 'item_id']),
+            retry_after=random.randint(30, 300),
+            error=random.choice(['ValueError', 'TypeError', 'KeyError']),
             plan=random.choice(['index_scan', 'seq_scan', 'bitmap_scan']),
+            # Anomaly log parameters.
+            max_conn=random.choice([50, 100, 200]),
+            service=random.choice(self.services),
+            attempts=random.randint(3, 10),
+            host=f'db-{random.randint(1, 5)}.example.com',
+            error_msg=random.choice(['Connection refused', 'Timeout', 'Network unreachable']),
+            disk_space=random.randint(1, 5),
             queue_size=random.randint(10000, 50000),
-            error=random.choice(['ValueError', 'KeyError', 'TypeError']),
-            service=random.choice(['payment-service', 'inventory-service', 'notification-service'])
+            ip_address=f'{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}'
         )
 
+        # CRITICAL: Must match training data format exactly.
         log_entry = {
-            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'timestamp': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z',  # Always include milliseconds.
             'level': level,
-            'component': random.choice(self.components),
+            'service': random.choice(self.services),  # MUST be 'service', not 'component'.
             'message': message,
             'is_anomaly': 1 if is_anomaly else 0  # Ground truth for testing.
         }
@@ -280,9 +360,9 @@ Examples:
     )
     parser.add_argument(
         '--rate',
-        type=int,
+        type=float,
         default=100,
-        help='Logs per second (default: 100)'
+        help='Logs per second, can be fractional (default: 100). Examples: 0.5 = 1 log per 2s, 0.17 = ~5 logs per 30s'
     )
     parser.add_argument(
         '--anomaly-prob',
