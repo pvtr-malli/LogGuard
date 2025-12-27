@@ -33,7 +33,8 @@ class StreamProcessor:
         output_topic: str = 'anomaly-results',
         consumer_group: str = 'logguard-processor',
         window_seconds: int = 30,
-        model_dir: str = '../models'
+        model_dir: str = '../models',
+        anomaly_log_file: str = 'logs/anomalies.log'
     ):
         """
         Initialize the stream processor.
@@ -44,10 +45,12 @@ class StreamProcessor:
         param consumer_group: Kafka consumer group ID.
         param window_seconds: Window size in seconds.
         param model_dir: Directory containing trained models.
+        param anomaly_log_file: File path to log detected anomalies.
         """
         self.kafka_brokers = kafka_brokers
         self.input_topic = input_topic
         self.output_topic = output_topic
+        self.anomaly_log_file = anomaly_log_file
         self.consumer_group = consumer_group
         self.window_seconds = window_seconds
         self.model_dir = Path(model_dir)
@@ -72,6 +75,9 @@ class StreamProcessor:
             log_file='logs/processor.log'
         )
 
+        # Setup anomaly alarm logger.
+        self._setup_anomaly_logger()
+
         # Setup signal handlers.
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
@@ -86,6 +92,80 @@ class StreamProcessor:
         self.logger.warning(f"Received signal {signum}, shutting down gracefully...")
         self.stop()
         sys.exit(0)
+
+    def _setup_anomaly_logger(self):
+        """
+        Setup dedicated logger for anomaly alarms.
+        """
+        import logging
+        from pathlib import Path
+
+        # Create logs directory if it doesn't exist.
+        log_path = Path(self.anomaly_log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create anomaly logger.
+        self.anomaly_logger = logging.getLogger('anomaly_alarm')
+        self.anomaly_logger.setLevel(logging.WARNING)
+
+        # Remove existing handlers to avoid duplicates.
+        self.anomaly_logger.handlers = []
+
+        # File handler for anomaly log.
+        file_handler = logging.FileHandler(self.anomaly_log_file)
+        file_handler.setLevel(logging.WARNING)
+
+        # Format: timestamp | severity | message.
+        formatter = logging.Formatter(
+            '%(asctime)s | %(levelname)s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        file_handler.setFormatter(formatter)
+
+        self.anomaly_logger.addHandler(file_handler)
+        self.logger.info(f"Anomaly alarm logger initialized: {self.anomaly_log_file}")
+
+    def _log_anomaly_alarm(self, result_message: Dict, logs_df: pd.DataFrame):
+        """
+        Log anomaly details to alarm file.
+
+        param result_message: Anomaly detection result.
+        param logs_df: DataFrame containing logs from the anomalous window.
+        """
+        anomaly_score = result_message['anomaly_score']
+        window_start = result_message['window_start']
+        window_end = result_message['window_end']
+        log_count = result_message['log_count']
+        error_count = result_message['error_count']
+        critical_count = result_message['critical_count']
+
+        # Calculate error rate.
+        error_rate = error_count / log_count if log_count > 0 else 0
+
+        # Get sample error messages from the window.
+        error_logs = logs_df[logs_df['level'].isin(['ERROR', 'FATAL'])]
+        sample_errors = error_logs['message'].head(3).tolist() if not error_logs.empty else []
+
+        # Create alarm message.
+        alarm_msg = (
+            f"ANOMALY DETECTED | "
+            f"Score: {anomaly_score:.3f} | "
+            f"Window: {window_start} to {window_end} | "
+            f"Logs: {log_count} | "
+            f"Errors: {error_count} ({error_rate:.1%}) | "
+            f"Critical: {critical_count}"
+        )
+
+        # Log to anomaly file.
+        self.anomaly_logger.warning(alarm_msg)
+
+        # Log sample error messages if available.
+        if sample_errors:
+            for i, msg in enumerate(sample_errors, 1):
+                self.anomaly_logger.warning(f"  Sample Error {i}: {msg}")
+
+        # Also log to console for visibility.
+        self.logger.warning(f"🚨 {alarm_msg}")
 
     def _load_models(self):
         """
@@ -201,6 +281,8 @@ class StreamProcessor:
 
                 if row['is_anomaly'] == 1:
                     self.anomalies_detected += 1
+                    # Log anomaly alarm to dedicated file.
+                    self._log_anomaly_alarm(result_message, logs_df)
 
             self.windows_processed += 1
             self.logs_processed += len(logs_df)
@@ -340,6 +422,11 @@ Examples:
         default='../models',
         help='Directory containing trained models (default: ../models)'
     )
+    parser.add_argument(
+        '--anomaly-log',
+        default='logs/anomalies.log',
+        help='File path to log detected anomalies (default: logs/anomalies.log)'
+    )
 
     args = parser.parse_args()
 
@@ -349,7 +436,8 @@ Examples:
         output_topic=args.output_topic,
         consumer_group=args.consumer_group,
         window_seconds=args.window,
-        model_dir=args.model_dir
+        model_dir=args.model_dir,
+        anomaly_log_file=args.anomaly_log
     )
 
     processor.start()
