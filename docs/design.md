@@ -144,11 +144,6 @@
 ## Component Details
 
 
-
-
-
-
-
 ### 2. Stream Processor (`log_guard/stream_processor.py`)
 
 **Purpose**: Main orchestrator that coordinates feature extraction and anomaly detection.

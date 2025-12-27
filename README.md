@@ -58,22 +58,18 @@ Comprehensive system design covering:
 
 ## Architecture
 
-TODO
+<img src="log_gradue.png" height=800 width=700>
 
 
 ## Performance
 
 ### Latency
 
-TODO 
-
-| Metric | Target | Actual | Status |
-|--------|--------|--------|--------|
-| **Average** | < 33s | ~31.5s | ✅ PASSED |
-| **P95** | < 33s | ~32s | ✅ PASSED |
-| **P99** | < 33s | ~32s | ✅ PASSED |
-
-*Note: 30s window accumulation + 1-2s processing overhead*
+| Metric | Mean | Median | P95 | P99 | Min | Max |
+|--------|------|--------|-----|-----|-----|-----|
+| **Kafka → Detection (ms)** | 14760.5 | 15049.1 | 15055.5 | 15064.1 | 3537.4 | 15071.4 |
+| **Total Latency (ms)** | 14760.5 | 15049.1 | 15055.5 | 15064.1 | 3537.4 | 15071.4 |
+| **Total Latency (seconds)** | 14.76 | 15.05 | 15.06 | 15.06 | 3.54 | 15.07 |    
 
 ### Throughput
 
@@ -92,30 +88,8 @@ TODO
 
 ---
 
-## Design Principles
-
-- 🎯 **Simplicity First**: Straightforward, readable code without unnecessary abstractions or premature optimization
-- 🌊 **Stream-Based Architecture**: Kafka-powered durable streaming with non-blocking I/O, backpressure-aware consumers, and 30-second windowed processing
-- 🛡️ **Data Safety**: Acknowledgement-based message consumption and fault-tolerant distributed execution guarantee no data loss
-- 📊 **Observability**: Comprehensive metrics for throughput, lag, error rates, latency, plus health checks and detailed anomaly alarms
-
----
 ## Project Requirements
 for mroe details - see [REQUIREMENTS.md](REQUIREMENTS.md)
-### Functional Requirements
-
-- ✅ Detect log anomalies within < 30 seconds of occurrence
-- ✅ Support continuous, uninterrupted ingestion from multiple services
-- ✅ Handle throughput of 50k-200k log events per minute
-- ✅ Ensure no data loss under normal operation or failures
-- ✅ Support horizontal scaling and distributed execution
-
-### Non-Functional Requirements
-
-- ✅ **Latency**: < 30s end-to-end
-- ✅ **Throughput**: 50k-100k events/min (scalable to 600k)
-- ✅ **Data Safety**: Kafka acknowledgements + TimescaleDB durability
-- ✅ **Observability**: Metrics, health checks, anomaly alarms
 
 ---
 
